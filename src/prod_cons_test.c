@@ -16,34 +16,18 @@
  */
 
 #include <pthread.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
 #define QUEUESIZE 10
-#define LOOP 5
+#define LOOP 20
 
 void *producer(void *args);
 void *consumer(void *args);
 
 typedef struct {
-  void *(*work)(void *);
-  void *arg;
-  int dummy;
-} workFunction;
-void *helloThread(void *args) {
-  char *text = (char *)args;
-  printf("%s\n", text);
-  return NULL;
-}
-
-int leftProFinished = 0; // count how many producers are left to finish
-bool isFinished = false; // false if there are producers else true
-
-typedef struct {
-  workFunction buf[QUEUESIZE];
-  // int buf[QUEUESIZE];
+  int buf[QUEUESIZE];
   long head, tail;
   int full, empty;
   pthread_mutex_t *mut;
@@ -55,59 +39,31 @@ void queueDelete(queue *q);
 void queueAdd(queue *q, int in);
 void queueDel(queue *q, int *out);
 
-int main(int argc, char *argv[]) {
-  if (argc != 3) {
-    printf("USAGE: ./bin/main <number of producers threads> <number of "
-           "consumers threads>");
-    exit(-1);
-  }
-  int numProThreads = atoi(argv[1]);
-  int numConThreads = atoi(argv[2]);
-
-  leftProFinished = numProThreads;
-
+int main() {
   queue *fifo;
-  pthread_t pro[numProThreads];
-  pthread_t con[numConThreads];
-  printf("Number of producers: %d\nNumber of consumers: %d\n", numProThreads,
-         numConThreads);
+  pthread_t pro, con;
 
   fifo = queueInit();
   if (fifo == NULL) {
     fprintf(stderr, "main: Queue Init failed.\n");
     exit(1);
   }
-
-  int rc;
-  for (int i = 0; i < numProThreads; i++) {
-    if (rc = pthread_create(&pro[i], NULL, producer, fifo)) {
-      printf("Error creating threads %d\n", rc);
-    }
-  }
-
-  for (int i = 0; i < numConThreads; i++) {
-    if (rc = pthread_create(&con[i], NULL, consumer, fifo)) {
-      printf("Error creating threads %d\n", rc);
-    }
-  }
-
-  for (int i = 0; i < numProThreads; i++)
-    pthread_join(pro[i], NULL);
-  for (int i = 0; i < numConThreads; i++)
-    pthread_join(con[i], NULL);
-
+  pthread_create(&pro, NULL, producer, fifo);
+  pthread_create(&con, NULL, consumer, fifo);
+  pthread_join(pro, NULL);
+  pthread_join(con, NULL);
   queueDelete(fifo);
 
-  pthread_exit(NULL);
   return 0;
 }
 
 void *producer(void *q) {
   queue *fifo;
+  int i;
 
   fifo = (queue *)q;
 
-  for (int i = 0; i < LOOP; i++) {
+  for (i = 0; i < LOOP; i++) {
     pthread_mutex_lock(fifo->mut);
     while (fifo->full) {
       printf("producer: queue FULL.\n");
@@ -116,39 +72,62 @@ void *producer(void *q) {
     queueAdd(fifo, i);
     pthread_mutex_unlock(fifo->mut);
     pthread_cond_signal(fifo->notEmpty);
+    // usleep(100000);
   }
-
-  pthread_mutex_t lock;
-  pthread_mutex_lock(&lock);
-  leftProFinished--;
-  pthread_mutex_unlock(&lock);
-
-  if (leftProFinished == 0) {
-    printf("Producers exited\n");
-    isFinished = true;
+  for (i = 0; i < LOOP; i++) {
+    pthread_mutex_lock(fifo->mut);
+    while (fifo->full) {
+      printf("producer: queue FULL.\n");
+      pthread_cond_wait(fifo->notFull, fifo->mut);
+    }
+    queueAdd(fifo, i);
+    pthread_mutex_unlock(fifo->mut);
+    pthread_cond_signal(fifo->notEmpty);
+    // usleep(200000);
   }
   return (NULL);
 }
 
 void *consumer(void *q) {
   queue *fifo;
-  int d;
+  int i, d;
 
   fifo = (queue *)q;
 
-  while (1) {
+  for (i = 0; i < LOOP; i++) {
     pthread_mutex_lock(fifo->mut);
     while (fifo->empty) {
-      printf("consumer: queue EMPTY\n");
+      printf("consumer: queue EMPTY.\n");
       pthread_cond_wait(fifo->notEmpty, fifo->mut);
     }
     queueDel(fifo, &d);
     pthread_mutex_unlock(fifo->mut);
     pthread_cond_signal(fifo->notFull);
+    // usleep(200000);
   }
-
+  for (i = 0; i < LOOP; i++) {
+    pthread_mutex_lock(fifo->mut);
+    while (fifo->empty) {
+      printf("consumer: queue EMPTY.\n");
+      pthread_cond_wait(fifo->notEmpty, fifo->mut);
+    }
+    queueDel(fifo, &d);
+    pthread_mutex_unlock(fifo->mut);
+    pthread_cond_signal(fifo->notFull);
+    // usleep(50000);
+  }
   return (NULL);
 }
+
+/*
+  typedef struct {
+  int buf[QUEUESIZE];
+  long head, tail;
+  int full, empty;
+  pthread_mutex_t *mut;
+  pthread_cond_t *notFull, *notEmpty;
+  } queue;
+*/
 
 queue *queueInit(void) {
   queue *q;
@@ -168,10 +147,6 @@ queue *queueInit(void) {
   q->notEmpty = (pthread_cond_t *)malloc(sizeof(pthread_cond_t));
   pthread_cond_init(q->notEmpty, NULL);
 
-  for (int i = 0; i < QUEUESIZE; i++) {
-    q->buf[i].work = helloThread;
-  }
-
   return (q);
 }
 
@@ -186,7 +161,8 @@ void queueDelete(queue *q) {
 }
 
 void queueAdd(queue *q, int in) {
-  (q->buf[q->tail].work)("Producer is called");
+  q->buf[q->tail] = in;
+  printf("producer: add %d to %d\n", in, q->tail);
   q->tail++;
   if (q->tail == QUEUESIZE)
     q->tail = 0;
@@ -198,7 +174,9 @@ void queueAdd(queue *q, int in) {
 }
 
 void queueDel(queue *q, int *out) {
-  (q->buf[q->head].work)("Consumer is called");
+  *out = q->buf[q->head];
+    printf("consumer: received %d from %d\n", *out, q->head);
+
 
   q->head++;
   if (q->head == QUEUESIZE)
