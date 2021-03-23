@@ -15,12 +15,6 @@ cross: src/prod_cons.c
 test: src/prod_cons_test.c
 	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ -lpthread
 
-check: src/check.c
-	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ -lpthread
-
-foo: src/foo.c
-	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ -lpthread
-
 .PHONY: clean
 
 clean:
