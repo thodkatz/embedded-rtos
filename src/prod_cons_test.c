@@ -72,7 +72,7 @@ void *producer(void *q) {
     queueAdd(fifo, i);
     pthread_mutex_unlock(fifo->mut);
     pthread_cond_signal(fifo->notEmpty);
-    // usleep(100000);
+    usleep(100000);
   }
   for (i = 0; i < LOOP; i++) {
     pthread_mutex_lock(fifo->mut);
@@ -83,7 +83,7 @@ void *producer(void *q) {
     queueAdd(fifo, i);
     pthread_mutex_unlock(fifo->mut);
     pthread_cond_signal(fifo->notEmpty);
-    // usleep(200000);
+    usleep(200000);
   }
   return (NULL);
 }

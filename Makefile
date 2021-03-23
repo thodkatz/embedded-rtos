@@ -18,6 +18,9 @@ test: src/prod_cons_test.c
 check: src/check.c
 	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ -lpthread
 
+foo: src/foo.c
+	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ -lpthread
+
 .PHONY: clean
 
 clean:
