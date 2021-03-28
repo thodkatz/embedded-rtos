@@ -289,7 +289,7 @@ void queueAdd(queue *q, int in) {
 void queueDel(queue *q, int *out) {
   if (q->empty) {
     printf(
-        "\033[1mThere is notthing to delete. Queue empty. Aborting\033[0m\n");
+        "\033[1mThere is nothing to delete. Queue empty. Aborting\033[0m\n");
     return;
   }
 
