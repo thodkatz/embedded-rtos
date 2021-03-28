@@ -15,6 +15,7 @@
  *	Revised	:
  */
 
+#include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -34,12 +35,15 @@ FILE *results;
 #define TIC(i) clock_gettime(CLOCK_MONOTONIC, &tic[i]);
 #define TOC(i)                                                                 \
   clock_gettime(CLOCK_MONOTONIC, &toc[i]);                                     \
-  fprintf(results, "%f,%d\n", diff_time(tic[i], toc[i]), i);
+  fprintf(results, "%d, %d, %d, %d, %f,%d\n", QUEUESIZE, loop, numProThreads,  \
+          numConThreads, diff_time(tic[i], toc[i]) * 1000, i);
 
-#define QUEUESIZE 10
-//#define LOOP 1000
+#ifndef QUEUESIZE
+#define QUEUESIZE 20
+#endif
 int loop;
-// #define DEBUG
+int numProThreads;
+int numConThreads;
 
 typedef struct {
   void *(*work)(void *);
@@ -68,26 +72,39 @@ queue *queueInit(int numThreads);
 void queueDelete(queue *q);
 void queueAdd(queue *q, int in);
 void queueDel(queue *q, int *out);
+
+/**
+ * Keep track if consumers are finished in order to send conditional signal
+ * when there aren't producers to wake them up
+ */
 bool areConsumersFinished(int numConThreads);
-void *helloThread(void *args);
+/**
+ * The function that each producer and consumer is calling
+ */
+void *workQueue(void *args);
+
+/**
+ * Time difference between timestamps
+ */
 double diff_time(struct timespec start, struct timespec end);
 
-bool isFinished = false;  // false if there are producers else true
-bool *isConsumerFinished; // keep track if consumer finished their tasks
+bool areProducersFinished = false; // false if there are producers else true
+bool *isConsumerFinished;          // keep track if consumer finished its tasks
 
 struct timespec *tic;
 struct timespec *toc;
 
 int main(int argc, char *argv[]) {
   if (argc != 4) {
-    printf("USAGE: ./bin/main <number of loops> <number of producers threads> <number of "
+    printf("USAGE: ./bin/main <number of loops> <number of producers threads> "
+           "<number of "
            "consumers threads>");
     exit(1);
   }
 
   loop = atoi(argv[1]);
-  int numProThreads = atoi(argv[2]);
-  int numConThreads = atoi(argv[3]);
+  numProThreads = atoi(argv[2]);
+  numConThreads = atoi(argv[3]);
 
   queue *fifo;
   pthread_t pro[numProThreads];
@@ -98,15 +115,16 @@ int main(int argc, char *argv[]) {
   tic = (struct timespec *)malloc(QUEUESIZE * sizeof(struct timespec));
   toc = (struct timespec *)malloc(QUEUESIZE * sizeof(struct timespec));
 
-  results = fopen("results.csv", "w");
+  results = fopen("results.csv", "a");
 
   isConsumerFinished = (bool *)malloc(numConThreads * sizeof(bool));
   for (int i = 0; i < numConThreads; i++) {
     isConsumerFinished[i] = false;
   }
 
-  printf("Numbero of loops: %d\nNumber of producers: %d\nNumber of consumers: %d\n", loop, numProThreads,
-         numConThreads);
+  printf("Numbero of loops: %d\nNumber of producers: %d\nNumber of consumers: "
+         "%d\n",
+         loop, numProThreads, numConThreads);
 
   fifo = queueInit(numConThreads + numProThreads);
   if (fifo == NULL) {
@@ -136,16 +154,16 @@ int main(int argc, char *argv[]) {
     printf("Joined producer id: %d\n", i);
   }
 
-  isFinished = true; // all producers exited
+  areProducersFinished = true; // all producers exited
 
   // spam signals until all consumer threads have finished
-  // WIP: Fix Busy waiting
+  // Fix: Use broadcast
   while (1) {
     printf("Send signal if someone is blocked\n");
     pthread_cond_signal(fifo->notEmpty); // unblock the waited thread
     if (areConsumersFinished(numConThreads))
       break;
-    usleep(10); // hybernate
+    usleep(10); // hibernate
   }
 
   for (int i = 0; i < numConThreads; i++) {
@@ -190,14 +208,14 @@ void *consumer(void *args) {
 
   while (1) {
     pthread_mutex_lock(fifo->mut);
-    while (fifo->empty && !isFinished) {
+    while (fifo->empty && !areProducersFinished) {
       printf("consumer: queue EMPTY\n");
       pthread_cond_wait(fifo->notEmpty, fifo->mut);
     }
     queueDel(fifo, &d);
     pthread_mutex_unlock(fifo->mut);
     pthread_cond_signal(fifo->notFull);
-    if (isFinished && fifo->empty)
+    if (areProducersFinished && fifo->empty)
       break;
   }
 
@@ -207,7 +225,7 @@ void *consumer(void *args) {
   return (NULL);
 }
 
-// true if all consumer threads finished
+// returns true if all consumer threads finished
 bool areConsumersFinished(int numConThreads) {
   bool finish = isConsumerFinished[0];
   for (int i = 1; i < numConThreads; i++) {
@@ -235,7 +253,7 @@ queue *queueInit(int numThreads) {
   pthread_cond_init(q->notEmpty, NULL);
 
   for (int i = 0; i < QUEUESIZE; i++) {
-    q->buf[i].work = helloThread;
+    q->buf[i].work = workQueue;
   }
 
   return (q);
@@ -252,10 +270,10 @@ void queueDelete(queue *q) {
 }
 
 void queueAdd(queue *q, int in) {
-  // (q->buf[q->tail].work)("Producer is called");
+  (q->buf[q->tail].work)("Producer is called");
   q->buf[q->tail].value = in;
-  TIC(q->tail)
-  
+  TIC(q->tail) // start counting for q->tail producer
+
   printf("producer: add %d to %ld\n", in, q->tail);
 
   q->tail++;
@@ -274,10 +292,10 @@ void queueDel(queue *q, int *out) {
         "\033[1mThere is notthing to delete. Queue empty. Aborting\033[0m\n");
     return;
   }
-  
-  TOC(q->head);
 
-  //(q->buf[q->head].work)("Consumer is called");
+  TOC(q->head) // stop counting for q->head producer
+
+  (q->buf[q->head].work)("Consumer is called");
   *out = q->buf[q->head].value;
   printf("consumer: received %d from %ld\n", *out, q->head);
 
@@ -292,9 +310,10 @@ void queueDel(queue *q, int *out) {
   return;
 }
 
-void *helloThread(void *args) {
-  char *text = (char *)args;
-  printf("%s\n", text);
+void *workQueue(void *args) {
+  double count = 0;
+  for (int i = 0; i < 10; i++)
+    count += sin(i);
   return NULL;
 }
 

@@ -1,19 +1,24 @@
 CC = gcc
 CROSSCC := /home/tkatz/Downloads/cross-pi-gcc-10.2.0-0/bin/arm-linux-gnueabihf-gcc 
-CFLAGS := -Wall -pedantic -g
+QUEUESIZE := 20
+CFLAGS := -Wall -pedantic -g -DQUEUESIZE=$(QUEUESIZE)
 
 BIN := bin
 
 $(shell mkdir -p bin)
 
+help:
+	echo "USAGE: make <target> QUEUESIZE=<n>"
+	echo "Default QUEUESIZE=20"
+
 local: src/prod_cons.c
-	$(CC) $(CFLAGS) $^ -o $(BIN)/$@  -lpthread
+	$(CC) $(CFLAGS) $^ -o $(BIN)/$@  -lpthread -lm
 
 cross: src/prod_cons.c
-	$(CROSSCC) $(CFLAGS) $^ -o $(BIN)/$@  -lpthread
+	$(CROSSCC) $(CFLAGS) $^ -o $(BIN)/$@  -lpthread -lm
 
-test: src/prod_cons_test.c
-	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ -lpthread
+test: src/prod_cons_original.c
+	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ -lpthread -lm
 
 .PHONY: clean
 
