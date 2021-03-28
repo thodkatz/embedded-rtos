@@ -1,4 +1,5 @@
-bin/
-report/
-results.csv
-results_bak.csv
+# producer_consumer
+producer_consumer/bin/
+producer_consumer/report/
+producer_consumer/results.csv
+producer_consumer/results_bak.csv
