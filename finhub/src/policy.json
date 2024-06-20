@@ -1,0 +1,27 @@
+{
+	"release": "01234567",
+	"product": "myproduct",
+	"schema-version": 1,
+	"retry": [{
+		"default": {
+			"backoff": [1000, 2000, 3000, 4000, 5000],
+			"conceal": 65535,
+			"jitterpc": 20,
+			"svalidping": 30,
+			"svalidhup": 35
+		}
+	}],
+	"s": [
+		{ "finnhub": {
+			"endpoint":		"ws.finnhub.io",
+      "port": 443,
+			"protocol":		"ws",
+			"http_url":		"?token=cpq4731r01qo647ncergcpq4731r01qo647nces0",
+			"nailed_up":        	true,
+			"ws_prioritize_reads":	true,
+			"tls":			true,
+			"retry":		"default"
+			}
+		}
+	]
+}
