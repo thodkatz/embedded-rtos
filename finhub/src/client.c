@@ -21,33 +21,45 @@
 #define RESET "\033[0m"
 
 #define QUEUESIZE 25
-#define NUM_PRO_THREADS 2
-#define NUM_CON_THREADS 2
+#define NUM_PRO_THREADS 1
+#define NUM_CON_THREADS 1
 
 typedef struct {
-  double price;
+  char *price;
   char *symbol;
-  unsigned long long timestamp;
-  double volume;
+  char *timestamp;
+  char *volume;
 } findata;
 
-const findata DEFAULT_FINDATA = {0, "", 0, 0};
+const findata DEFAULT_FINDATA = {"-1", "-1", "-1", "-1"};
 
 typedef struct {
   findata buf[QUEUESIZE];
   long head, tail;
   int full, empty;
-  pthread_mutex_t *mut;
+  pthread_mutex_t *amzn;
+  pthread_mutex_t *appl;
+  pthread_mutex_t *binance;
+  pthread_mutex_t *icm;
   pthread_cond_t *notFull, *notEmpty;
 } queue;
 
+// The pointer to the output file
+static FILE *amzn_fp;
+static FILE *appl_fp;
+static FILE *binance_fp;
+static FILE *icm_fp;
+
+queue *fifo;
+
 typedef struct {
-  queue *q;
+  findata temp;
   int tid;
 } pthread_data;
 
 pthread_t producers[NUM_PRO_THREADS];
 pthread_t consumers[NUM_CON_THREADS];
+
 pthread_data prodData[NUM_PRO_THREADS];
 pthread_data conData[NUM_CON_THREADS];
 
@@ -69,9 +81,6 @@ static int connection_flag = 0;
 // Variable that is =0 if the client should send messages to the server, and =1
 // otherwise
 static int writeable_flag = 0;
-
-// The pointer to the output file
-static FILE *out_fp;
 
 // Function to handle the change of the keepRunning boolean
 void intHandler(int dummy) { keepRunning = 0; }
@@ -95,20 +104,73 @@ static unsigned long long get_timestamp() {
   return millisecondsSinceEpoch;
 }
 
+static void findataFromJson(findata *transaction, const char *label,
+                            char *buf) {
+  if (strcmp(label, "data[].p") == 0) {
+    transaction->price = (char *)malloc(strlen(buf) + 1);
+    strcpy(transaction->price, buf);
+  } else if (strcmp(label, "data[].s") == 0) {
+    transaction->symbol = (char *)malloc(strlen(buf) + 1);
+    strcpy(transaction->symbol, buf);
+  } else if (strcmp(label, "data[].t") == 0) {
+    transaction->timestamp = (char *)malloc(strlen(buf) + 1);
+    strcpy(transaction->timestamp, buf);
+  } else if (strcmp(label, "data[].v") == 0) {
+    transaction->volume = (char *)malloc(strlen(buf) + 1);
+    strcpy(transaction->volume, buf);
+  } else
+    printf("Label undefined\n");
+}
+
+static FILE *get_file_descriptor_from_transaction(findata *transaction) {
+  if (transaction == NULL)
+    return NULL;
+
+  if (strcmp(transaction->symbol, "AMZN") == 0)
+    return amzn_fp;
+  else if (strcmp(transaction->symbol, "APPL") == 0)
+    return appl_fp;
+  else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0)
+    return binance_fp;
+  else if (strcmp(transaction->symbol, "IC:MARKETS") == 0)
+    return icm_fp;
+  else
+    printf("Error returning file descriptior: Not found\n");
+}
+
+static pthread_mutex_t *get_mutex_from_transaction(findata *transaction) {
+  if (transaction == NULL)
+    return NULL;
+
+  if (strcmp(transaction->symbol, "AMZN") == 0)
+    return fifo->amzn;
+  else if (strcmp(transaction->symbol, "APPL") == 0)
+    return fifo->appl;
+  else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0)
+    return fifo->binance;
+  else if (strcmp(transaction->symbol, "IC:MARKETS") == 0)
+    return fifo->icm;
+  else
+    printf("Error returning file descriptior: Not found\n");
+}
+
 // Callback function for the LEJP JSON Parser
 static signed char cb(struct lejp_ctx *ctx, char reason) {
-
-  // If the parsed JSON object is one we are interested in (so in the tok
-  // array), write to file
+  findata *transaction = (findata *)ctx->user;
   if (reason & LEJP_FLAG_CB_IS_VALUE && (ctx->path_match > 0)) {
     int last_element_from_tok = 4;
-    if (ctx->path_match == last_element_from_tok)
-      fprintf(out_fp, "%s,%llu\n", ctx->buf, get_timestamp());
-    else
-      fprintf(out_fp, "%s,", ctx->buf);
+    findataFromJson(transaction, ctx->path, ctx->buf);
+    if (ctx->path_match == last_element_from_tok) {
+      pthread_mutex_t *symbol_mutex = get_mutex_from_transaction(transaction);
+      FILE *fp = get_file_descriptor_from_transaction(transaction);
+      pthread_mutex_lock(symbol_mutex);
+      fprintf(fp, "%s,%s,%s,%s,%llu\n", transaction->price, transaction->symbol,
+              transaction->timestamp, transaction->volume, get_timestamp());
+      pthread_mutex_unlock(symbol_mutex);
+    }
   }
   if (reason == LEJPCB_COMPLETE) {
-    fflush(out_fp);
+    // fflush(fp);
   }
 
   return 0;
@@ -189,7 +251,9 @@ static int ws_service_callback(struct lws *wsi,
     char *msg = (char *)in;
 
     struct lejp_ctx ctx;
+    findata *transaction = (findata *)malloc(sizeof(findata));
     lejp_construct(&ctx, cb, NULL, tok, LWS_ARRAY_SIZE(tok));
+    ctx.user = transaction;
     int m = lejp_parse(&ctx, (uint8_t *)msg, strlen(msg));
     if (m < 0 && m != LEJP_CONTINUE) {
       lwsl_err("parse failed %d\n", m);
@@ -244,6 +308,7 @@ static struct lws_protocols protocols[] = {
 
 struct lws_context *context = NULL;
 struct lws_context_creation_info info;
+struct lws_client_connect_info clientConnectionInfo;
 
 // Main function
 int main(void) {
@@ -252,8 +317,11 @@ int main(void) {
   signal(SIGINT, intHandler);
 
   // Open the output file
-  out_fp = fopen("logs.csv", "w");
-  fprintf(out_fp, "price,symbol,timestamp,volume,posttimestamp\n");
+  amzn_fp = fopen("logs_amzn.csv", "w");
+  appl_fp = fopen("logs_appl.csv", "w");
+  binance_fp = fopen("logs_binance.csv", "w");
+  icm_fp = fopen("logs_icm.csv", "w");
+  // fprintf(out_fp, "price,symbol,timestamp,volume,posttimestamp\n");
 
   memset(&info, 0, sizeof info);
 
@@ -285,7 +353,6 @@ int main(void) {
   sprintf(inputURL, "wss://ws.finnhub.io/?token=%s", api_key);
   const char *urlProtocol, *urlTempPath;
 
-  struct lws_client_connect_info clientConnectionInfo;
   memset(&clientConnectionInfo, 0, sizeof(clientConnectionInfo));
 
   // Set the context for the client connection
@@ -313,21 +380,53 @@ int main(void) {
   clientConnectionInfo.ietf_version_or_minus_one = -1;
   clientConnectionInfo.protocol = protocols[0].name;
 
-  queue *fifo;
   fifo = queueInit();
+  if (fifo == NULL) {
+    fprintf(stderr, "main: Queue Init failed.\n");
+    exit(1);
+  }
 
-  // While a kill signal is not sent (ctrl+c), keep running
+  int rc;
+  for (int i = 0; i < NUM_PRO_THREADS; i++) {
+    prodData[i].tid = i;
+    if (rc = pthread_create(&producers[i], NULL, producer, &prodData[i])) {
+      printf("Error creating threads %d\n", rc);
+    }
+  }
+
+  //   for (int i = 0; i < NUM_CON_THREADS; i++) {
+  //     conData[i].tid = i;
+  //     if (rc = pthread_create(&consumers[i], NULL, consumer, &conData[i])) {
+  //       printf("Error creating threads %d\n", rc);
+  //     }
+  //   }
+
+  for (int i = 0; i < NUM_PRO_THREADS; i++) {
+    pthread_join(producers[i], NULL);
+    printf("Joined producer id: %d\n", i);
+  }
+
+  printf(KRED "\n[Main] Closing client\n" RESET);
+  lws_context_destroy(context);
+  fclose(amzn_fp);
+  fclose(appl_fp);
+  fclose(binance_fp);
+  fclose(icm_fp);
+  return 0;
+}
+
+void *producer(void *args) {
   struct lws *wsi = NULL;
   while (keepRunning) {
     // If the websocket is not connected, connect
     if (!connection_flag || !wsi) {
-      printf(KGRN "Connecting to %s://%s:%d%s \n\n" RESET, urlProtocol,
-             clientConnectionInfo.address, clientConnectionInfo.port,
-             clientConnectionInfo.path);
+      printf(KGRN "Connecting to %s://%s:%d%s \n\n" RESET,
+             clientConnectionInfo.protocol, clientConnectionInfo.address,
+             clientConnectionInfo.port, clientConnectionInfo.path);
       wsi = lws_client_connect_via_info(&clientConnectionInfo);
       if (wsi == NULL) {
         printf(KRED "[Main] wsi create error.\n" RESET);
-        return -1;
+        return (NULL); // todo exit with error code -1
       }
       printf(KGRN "[Main] wsi creation success.\n" RESET);
       connection_flag = 1;
@@ -336,14 +435,8 @@ int main(void) {
     // Service websocket activity
     lws_service(context, 0);
   }
-
-  printf(KRED "\n[Main] Closing client\n" RESET);
-  lws_context_destroy(context);
-  fclose(out_fp);
-  return 0;
+  return (NULL);
 }
-
-void *producer(void *args) {}
 
 void *consumer(void *args) {}
 
@@ -358,10 +451,22 @@ queue *queueInit() {
   q->full = 0;
   q->head = 0;
   q->tail = 0;
-  q->mut = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
-  pthread_mutex_init(q->mut, NULL);
+
+  q->amzn = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+  pthread_mutex_init(q->amzn, NULL);
+
+  q->appl = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+  pthread_mutex_init(q->appl, NULL);
+
+  q->binance = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+  pthread_mutex_init(q->binance, NULL);
+
+  q->icm = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+  pthread_mutex_init(q->icm, NULL);
+
   q->notFull = (pthread_cond_t *)malloc(sizeof(pthread_cond_t));
   pthread_cond_init(q->notFull, NULL);
+
   q->notEmpty = (pthread_cond_t *)malloc(sizeof(pthread_cond_t));
   pthread_cond_init(q->notEmpty, NULL);
 
@@ -377,8 +482,14 @@ void queueDelete(queue *q) {
   free(q->notFull);
   pthread_cond_destroy(q->notEmpty);
   free(q->notEmpty);
-  pthread_mutex_destroy(q->mut);
-  free(q->mut);
+  pthread_mutex_destroy(q->amzn);
+  pthread_mutex_destroy(q->appl);
+  pthread_mutex_destroy(q->binance);
+  pthread_mutex_destroy(q->icm);
+  free(q->amzn);
+  free(q->appl);
+  free(q->binance);
+  free(q->icm);
   free(q);
 }
 
