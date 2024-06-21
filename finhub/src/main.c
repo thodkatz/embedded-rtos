@@ -8,14 +8,6 @@ int test_result = 1;
 
 extern const lws_ss_info_t ssi_finnhub_t;
 
-// static const struct lws_extension extensions[] = {
-//     {
-//         "permessage-deflate", lws_extension_callback_pm_deflate,
-//         "permessage-deflate; client_no_context_takeover; client_max_window_bits"
-//     },
-//     { NULL, NULL, NULL } // terminator
-// };
-
 static void sigint_handler(int sig) {
     lws_default_loop_exit(cx);
 }
@@ -28,8 +20,6 @@ int main(int argc, const char **argv) {
     signal(SIGINT, sigint_handler);
 
     lwsl_user("LWS minimal Secure Streams Finnhub client\n");
-
-    // info.extensions = extensions;
 
     cx = lws_create_context(&info);
     if (!cx) {

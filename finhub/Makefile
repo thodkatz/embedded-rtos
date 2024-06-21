@@ -18,6 +18,9 @@ local: src/main.c src/finhub-ss.c
 cross: src/main.c src/finhub-ss.c
 	$(CROSSCC) $(CFLAGS) $^ -o $(BIN)/$@ $(LIBS)
 
+client: src/client.c
+	$(CC) $(CFLAGS) $^ -o $(BIN)/$@ $(LIBS)
+
 
 .PHONY: clean
 
