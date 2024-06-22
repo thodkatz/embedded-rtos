@@ -21,7 +21,7 @@
 #define RESET "\033[0m"
 
 #define QUEUESIZE 25
-#define NUM_PRO_THREADS 1
+#define NUM_PRO_THREADS 4
 #define NUM_CON_THREADS 1
 
 typedef struct {
@@ -59,6 +59,8 @@ typedef struct {
 
 pthread_t producers[NUM_PRO_THREADS];
 pthread_t consumers[NUM_CON_THREADS];
+
+pthread_mutex_t *mux;
 
 pthread_data prodData[NUM_PRO_THREADS];
 pthread_data conData[NUM_CON_THREADS];
@@ -161,12 +163,9 @@ static signed char cb(struct lejp_ctx *ctx, char reason) {
     int last_element_from_tok = 4;
     findataFromJson(transaction, ctx->path, ctx->buf);
     if (ctx->path_match == last_element_from_tok) {
-      pthread_mutex_t *symbol_mutex = get_mutex_from_transaction(transaction);
       FILE *fp = get_file_descriptor_from_transaction(transaction);
-      pthread_mutex_lock(symbol_mutex);
       fprintf(fp, "%s,%s,%s,%s,%llu\n", transaction->price, transaction->symbol,
               transaction->timestamp, transaction->volume, get_timestamp());
-      pthread_mutex_unlock(symbol_mutex);
     }
   }
   if (reason == LEJPCB_COMPLETE) {
@@ -380,6 +379,9 @@ int main(void) {
   clientConnectionInfo.ietf_version_or_minus_one = -1;
   clientConnectionInfo.protocol = protocols[0].name;
 
+  mux = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+  pthread_mutex_init(mux, NULL);
+
   fifo = queueInit();
   if (fifo == NULL) {
     fprintf(stderr, "main: Queue Init failed.\n");
@@ -419,11 +421,14 @@ void *producer(void *args) {
   struct lws *wsi = NULL;
   while (keepRunning) {
     // If the websocket is not connected, connect
-    if (!connection_flag || !wsi) {
+    pthread_mutex_lock(mux);
+    if (!connection_flag) {
       printf(KGRN "Connecting to %s://%s:%d%s \n\n" RESET,
              clientConnectionInfo.protocol, clientConnectionInfo.address,
              clientConnectionInfo.port, clientConnectionInfo.path);
-      wsi = lws_client_connect_via_info(&clientConnectionInfo);
+      wsi = lws_client_connect_via_info(
+          &clientConnectionInfo); // I think this one opens the websocket, and
+                                  // you are allowed to have only 1
       if (wsi == NULL) {
         printf(KRED "[Main] wsi create error.\n" RESET);
         return (NULL); // todo exit with error code -1
@@ -433,7 +438,9 @@ void *producer(void *args) {
     }
 
     // Service websocket activity
+    // only one thread should listen maybe?
     lws_service(context, 0);
+    pthread_mutex_unlock(mux);
   }
   return (NULL);
 }
