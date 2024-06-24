@@ -1,7 +1,9 @@
 # producer_consumer
 **/bin/
 **/.vscode
+**/logs**
 producer_consumer/report/
 producer_consumer/results.csv
 producer_consumer/results_bak.csv
+main
 

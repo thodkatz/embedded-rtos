@@ -134,7 +134,7 @@ static FILE *get_file_descriptor_from_transaction(findata *transaction) {
     return appl_fp;
   else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0)
     return binance_fp;
-  else if (strcmp(transaction->symbol, "IC:MARKETS") == 0)
+  else if (strcmp(transaction->symbol, "IC MARKETS:1") == 0)
     return icm_fp;
   else
     printf("Error returning file descriptior: Not found\n");
@@ -163,6 +163,7 @@ static signed char cb(struct lejp_ctx *ctx, char reason) {
     int last_element_from_tok = 4;
     findataFromJson(transaction, ctx->path, ctx->buf);
     if (ctx->path_match == last_element_from_tok) {
+      // queueAdd()
       FILE *fp = get_file_descriptor_from_transaction(transaction);
       fprintf(fp, "%s,%s,%s,%s,%llu\n", transaction->price, transaction->symbol,
               transaction->timestamp, transaction->volume, get_timestamp());
