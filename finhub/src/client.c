@@ -4,6 +4,7 @@
 
 #include <libwebsockets.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,8 +22,10 @@
 #define RESET "\033[0m"
 
 #define QUEUESIZE 25
-#define NUM_PRO_THREADS 4
-#define NUM_CON_THREADS 1
+#define NUM_PRO_THREADS 2
+#define NUM_CON_THREADS 2
+
+#define MOVING_AVERAGE_TIMESPAN_MINUTES 15
 
 typedef struct {
   char *price;
@@ -37,20 +40,62 @@ typedef struct {
   findata buf[QUEUESIZE];
   long head, tail;
   int full, empty;
-  pthread_mutex_t *amzn;
-  pthread_mutex_t *appl;
-  pthread_mutex_t *binance;
-  pthread_mutex_t *icm;
   pthread_cond_t *notFull, *notEmpty;
 } queue;
 
+typedef struct {
+  double open;
+  double close;
+  double max;
+  double min;
+  double vol;
+  double totalPrice;
+  uint64_t numTransactions;
+  bool isDefault;
+} candlestickMinute;
+
+typedef struct {
+  double prices[MOVING_AVERAGE_TIMESPAN_MINUTES];
+  double totalPrice;
+  uint8_t count;
+  uint8_t index;
+} movingAverage;
+
+typedef struct {
+  candlestickMinute c;
+  movingAverage ma;
+  FILE *transaction;
+  FILE *fp_ma;
+  FILE *fp_candlestick;
+} symbol;
+
+movingAverage amzn_ma;
+movingAverage msft_ma;
+movingAverage binance_ma;
+movingAverage icm_ma;
+
 // The pointer to the output file
 static FILE *amzn_fp;
-static FILE *appl_fp;
+static FILE *msft_fp;
 static FILE *binance_fp;
 static FILE *icm_fp;
 
+static FILE *amzn_fp_candlestick;
+static FILE *msft_fp_candlestick;
+static FILE *binance_fp_candlestick;
+static FILE *icm_fp_candlestick;
+
+static FILE *amzn_fp_ma;
+static FILE *msft_fp_ma;
+static FILE *binance_fp_ma;
+static FILE *icm_fp_ma;
+
 queue *fifo;
+
+candlestickMinute *amzn_candlestick;
+candlestickMinute *msft_candlestick;
+candlestickMinute *binance_candlestick;
+candlestickMinute *icm_candlestick;
 
 typedef struct {
   findata temp;
@@ -59,19 +104,36 @@ typedef struct {
 
 pthread_t producers[NUM_PRO_THREADS];
 pthread_t consumers[NUM_CON_THREADS];
+pthread_t scheduler;
 
 pthread_mutex_t *mux;
 
 pthread_data prodData[NUM_PRO_THREADS];
 pthread_data conData[NUM_CON_THREADS];
 
+bool areProducersFinished = false; // false if there are producers else true
+bool *isConsumerFinished;          // keep track if consumer finished its tasks
+
+uint64_t minutesSinceStart = 0;
+
 void *producer(void *args);
 void *consumer(void *args);
 
 queue *queueInit();
 void queueDelete(queue *q);
-void queueAdd(queue *q, int in);
-void queueDel(queue *q, int *out);
+void queueAdd(queue *q, findata *in);
+void queueDel(queue *q);
+
+candlestickMinute *candlestickInit();
+void movingAverageInit(movingAverage *ma);
+void saveCandlestick(candlestickMinute *c, FILE *fp);
+double getMean(candlestickMinute *c);
+void updateCandlestick(candlestickMinute *c, findata *transaction);
+void saveTransaction(findata *transaction);
+void saveMovingAverage(movingAverage *ma, FILE *fp);
+void *schedule(void *args);
+void addDataPoint(movingAverage *ma, double price);
+bool areConsumersFinished();
 
 // Variable that is =1 if the client should keep running, and =0 to close the
 // client
@@ -124,37 +186,21 @@ static void findataFromJson(findata *transaction, const char *label,
     printf("Label undefined\n");
 }
 
-static FILE *get_file_descriptor_from_transaction(findata *transaction) {
-  if (transaction == NULL)
-    return NULL;
+// static FILE *get_file_descriptor_from_transaction(findata *transaction) {
+//   if (transaction == NULL)
+//     return NULL;
 
-  if (strcmp(transaction->symbol, "AMZN") == 0)
-    return amzn_fp;
-  else if (strcmp(transaction->symbol, "APPL") == 0)
-    return appl_fp;
-  else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0)
-    return binance_fp;
-  else if (strcmp(transaction->symbol, "IC MARKETS:1") == 0)
-    return icm_fp;
-  else
-    printf("Error returning file descriptior: Not found\n");
-}
-
-static pthread_mutex_t *get_mutex_from_transaction(findata *transaction) {
-  if (transaction == NULL)
-    return NULL;
-
-  if (strcmp(transaction->symbol, "AMZN") == 0)
-    return fifo->amzn;
-  else if (strcmp(transaction->symbol, "APPL") == 0)
-    return fifo->appl;
-  else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0)
-    return fifo->binance;
-  else if (strcmp(transaction->symbol, "IC:MARKETS") == 0)
-    return fifo->icm;
-  else
-    printf("Error returning file descriptior: Not found\n");
-}
+//   if (strcmp(transaction->symbol, "AMZN") == 0)
+//     return amzn_fp;
+//   else if (strcmp(transaction->symbol, "msft") == 0)
+//     return msft_fp;
+//   else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0)
+//     return binance_fp;
+//   else if (strcmp(transaction->symbol, "IC MARKETS:1") == 0)
+//     return icm_fp;
+//   else
+//     printf("Error returning file descriptior: Not found\n");
+// }
 
 // Callback function for the LEJP JSON Parser
 static signed char cb(struct lejp_ctx *ctx, char reason) {
@@ -163,10 +209,7 @@ static signed char cb(struct lejp_ctx *ctx, char reason) {
     int last_element_from_tok = 4;
     findataFromJson(transaction, ctx->path, ctx->buf);
     if (ctx->path_match == last_element_from_tok) {
-      // queueAdd()
-      FILE *fp = get_file_descriptor_from_transaction(transaction);
-      fprintf(fp, "%s,%s,%s,%s,%llu\n", transaction->price, transaction->symbol,
-              transaction->timestamp, transaction->volume, get_timestamp());
+      queueAdd(fifo, transaction);
     }
   }
   if (reason == LEJPCB_COMPLETE) {
@@ -268,7 +311,7 @@ static int ws_service_callback(struct lws *wsi,
     printf(KYEL "\n[Main Service] On writeable is called.\n" RESET);
 
     if (!writeable_flag) {
-      char symb_arr[4][50] = {"APPL\0", "AMZN\0", "BINANCE:BTCUSDT\0",
+      char symb_arr[4][50] = {"MSFT\0", "AMZN\0", "BINANCE:BTCUSDT\0",
                               "IC MARKETS:1\0"};
       char str[100];
       for (int i = 0; i < 4; i++) {
@@ -318,10 +361,21 @@ int main(void) {
 
   // Open the output file
   amzn_fp = fopen("logs_amzn.csv", "w");
-  appl_fp = fopen("logs_appl.csv", "w");
+  msft_fp = fopen("logs_msft.csv", "w");
   binance_fp = fopen("logs_binance.csv", "w");
   icm_fp = fopen("logs_icm.csv", "w");
   // fprintf(out_fp, "price,symbol,timestamp,volume,posttimestamp\n");
+
+  amzn_fp_candlestick = fopen("logs_amzn_candlestick.csv", "w");
+  msft_fp_candlestick = fopen("logs_msft_candlestick.csv", "w");
+  binance_fp_candlestick = fopen("logs_binance_candlestick.csv", "w");
+  icm_fp_candlestick = fopen("logs_icm_candlestick.csv", "w");
+  // fprintf(out_fp, "open,close,max,min,volume\n");
+
+  amzn_fp_ma = fopen("logs_amzn_ma.csv", "w");
+  msft_fp_ma = fopen("logs_msft_ma.csv", "w");
+  binance_fp_ma = fopen("logs_binance_ma.csv", "w");
+  icm_fp_ma = fopen("logs_icm_ma.csv", "w");
 
   memset(&info, 0, sizeof info);
 
@@ -389,6 +443,34 @@ int main(void) {
     exit(1);
   }
 
+  amzn_candlestick = candlestickInit();
+  msft_candlestick = candlestickInit();
+  binance_candlestick = candlestickInit();
+  icm_candlestick = candlestickInit();
+
+  movingAverageInit(&amzn_ma);
+  movingAverageInit(&msft_ma);
+  movingAverageInit(&binance_ma);
+  movingAverageInit(&icm_ma);
+
+  isConsumerFinished = (bool *)malloc(NUM_CON_THREADS * sizeof(bool));
+  for (int i = 0; i < NUM_CON_THREADS; i++) {
+    isConsumerFinished[i] = false;
+  }
+
+  int result;
+  int policy;
+  // pthread_attr_t attr;
+  // pthread_attr_init(&attr);
+  //  Set the scheduling policy to FIFO (First In First Out)
+  // pthread_attr_getschedpolicy(&attr, &policy);
+  pthread_create(&scheduler, NULL, schedule, NULL);
+  // result = pthread_setschedprio(scheduler, sched_get_priority_max(policy));
+  // if (result != 0) {
+  // fprintf(stderr, "Error setting thread priority\n");
+  // return 1;
+  //}
+
   int rc;
   for (int i = 0; i < NUM_PRO_THREADS; i++) {
     prodData[i].tid = i;
@@ -397,31 +479,61 @@ int main(void) {
     }
   }
 
-  //   for (int i = 0; i < NUM_CON_THREADS; i++) {
-  //     conData[i].tid = i;
-  //     if (rc = pthread_create(&consumers[i], NULL, consumer, &conData[i])) {
-  //       printf("Error creating threads %d\n", rc);
-  //     }
-  //   }
+  for (int i = 0; i < NUM_CON_THREADS; i++) {
+    conData[i].tid = i;
+    if (rc = pthread_create(&consumers[i], NULL, consumer, &conData[i])) {
+      printf("Error creating threads %d\n", rc);
+    }
+  }
 
   for (int i = 0; i < NUM_PRO_THREADS; i++) {
     pthread_join(producers[i], NULL);
     printf("Joined producer id: %d\n", i);
   }
 
+  areProducersFinished = true;
+
+  // spam signals until all consumer threads have finished
+  // Fix: Use broadcast
+  while (1) {
+    printf("Send signal if someone is blocked\n");
+    pthread_cond_signal(fifo->notEmpty); // unblock the waited thread
+    if (areConsumersFinished())
+      break;
+    usleep(10); // hibernate
+  }
+
+  for (int i = 0; i < NUM_CON_THREADS; i++) {
+    pthread_join(consumers[i], NULL);
+    printf("Joined consumer id: %d\n", i);
+  }
+
+  pthread_join(scheduler, NULL);
+
   printf(KRED "\n[Main] Closing client\n" RESET);
   lws_context_destroy(context);
+  queueDelete(fifo);
   fclose(amzn_fp);
-  fclose(appl_fp);
+  fclose(msft_fp);
   fclose(binance_fp);
   fclose(icm_fp);
   return 0;
 }
 
+bool areConsumersFinished() {
+  bool finish = isConsumerFinished[0];
+  for (int i = 1; i < NUM_CON_THREADS; i++) {
+    finish = finish && isConsumerFinished[i];
+  }
+  return finish;
+}
+
 void *producer(void *args) {
   struct lws *wsi = NULL;
+  // time_t start_time = time(NULL);
+  // while (difftime(time(NULL), start_time) < 20.0) {
   while (keepRunning) {
-    // If the websocket is not connected, connect
+    //  If the websocket is not connected, connect
     pthread_mutex_lock(mux);
     if (!connection_flag) {
       printf(KGRN "Connecting to %s://%s:%d%s \n\n" RESET,
@@ -438,15 +550,142 @@ void *producer(void *args) {
       connection_flag = 1;
     }
 
+    while (fifo->full) {
+      printf("producer: queue FULL.\n");
+      pthread_cond_wait(fifo->notFull, mux);
+    }
+
     // Service websocket activity
     // only one thread should listen maybe?
     lws_service(context, 0);
+    pthread_mutex_unlock(mux);
+    pthread_cond_signal(fifo->notEmpty);
+  }
+  return (NULL);
+}
+
+void *schedule(void *args) {
+  while (1) {
+    if (areConsumersFinished())
+      break;
+    sleep(60);
+    minutesSinceStart += 1;
+    pthread_mutex_lock(mux);
+    fprintf(amzn_fp, "\n");
+    fprintf(msft_fp, "\n");
+    fprintf(binance_fp, "\n");
+    fprintf(icm_fp, "\n");
+
+    saveCandlestick(amzn_candlestick, amzn_fp_candlestick);
+    saveCandlestick(msft_candlestick, msft_fp_candlestick);
+    saveCandlestick(binance_candlestick, binance_fp_candlestick);
+    saveCandlestick(icm_candlestick, icm_fp_candlestick);
+
+    addDataPoint(&amzn_ma, getMean(amzn_candlestick));
+    addDataPoint(&msft_ma, getMean(msft_candlestick));
+    addDataPoint(&binance_ma, getMean(binance_candlestick));
+    addDataPoint(&icm_ma, getMean(icm_candlestick));
+
+    if (minutesSinceStart % MOVING_AVERAGE_TIMESPAN_MINUTES == 0) {
+      saveMovingAverage(&amzn_ma, amzn_fp_ma);
+      saveMovingAverage(&msft_ma, msft_fp_ma);
+      saveMovingAverage(&binance_ma, binance_fp_ma);
+      saveMovingAverage(&icm_ma, icm_fp_ma);
+    }
+
+    msft_candlestick = candlestickInit();
+    amzn_candlestick = candlestickInit();
+    binance_candlestick = candlestickInit();
+    icm_candlestick = candlestickInit();
+
     pthread_mutex_unlock(mux);
   }
   return (NULL);
 }
 
-void *consumer(void *args) {}
+double getMean(candlestickMinute *c) {
+  if (c->numTransactions == 0)
+    return 0;
+  return c->totalPrice / c->numTransactions;
+}
+
+void addDataPoint(movingAverage *ma, double price) {
+  if (price == 0)
+    return;
+  // Remove the oldest data point from totals if the window is full
+  if (ma->count == MOVING_AVERAGE_TIMESPAN_MINUTES) {
+    ma->totalPrice -= ma->prices[ma->index];
+  } else {
+    ma->count++;
+  }
+
+  ma->prices[ma->index] = price;
+  ma->totalPrice += price;
+
+  ma->index = (ma->index + 1) % MOVING_AVERAGE_TIMESPAN_MINUTES;
+}
+
+void saveCandlestick(candlestickMinute *c, FILE *fp) {
+  fprintf(fp, "%lf,%lf,%lf,%lf,%lf,%lf,%lu,%lf,%llu\n", c->open, c->close,
+          c->min, c->max, c->vol, c->totalPrice, c->numTransactions, getMean(c),
+          get_timestamp());
+}
+
+void saveMovingAverage(movingAverage *ma, FILE *fp) {
+  double value;
+  if (ma->count == 0) {
+    value = 0;
+  } else {
+    value = ma->totalPrice / ma->count;
+  }
+  fprintf(fp, "%lf,%lf,%u,%llu\n", value, ma->totalPrice, ma->count,
+          get_timestamp());
+}
+
+void *consumer(void *args) {
+  pthread_data *data = (pthread_data *)args;
+
+  while (1) {
+    pthread_mutex_lock(mux);
+    while (fifo->empty && !areProducersFinished) {
+      printf("consumer: queue EMPTY\n");
+      pthread_cond_wait(fifo->notEmpty, mux);
+    }
+    queueDel(fifo);
+    pthread_mutex_unlock(mux);
+    pthread_cond_signal(fifo->notFull);
+    if (areProducersFinished && fifo->empty)
+      break;
+  }
+
+  printf("Consumer Finished id:%d\n", data->tid);
+  isConsumerFinished[data->tid] = true;
+
+  return (NULL);
+}
+
+candlestickMinute *candlestickInit() {
+  candlestickMinute *c;
+  c = (candlestickMinute *)malloc(sizeof(candlestickMinute));
+  c->close = 0;
+  c->open = 0;
+  c->max = 0;
+  c->min = 0;
+  c->vol = 0;
+  c->totalPrice = 0;
+  c->numTransactions = 0;
+  c->isDefault = true;
+  return c;
+}
+
+void movingAverageInit(movingAverage *ma) {
+  ma->index = 0;
+  ma->count = 0;
+  ma->totalPrice = 0.0;
+  for (int i = 0; i < MOVING_AVERAGE_TIMESPAN_MINUTES; i++) {
+    ma->prices[i] = 0.0;
+  }
+}
 
 queue *queueInit() {
   queue *q;
@@ -459,18 +698,6 @@ queue *queueInit() {
   q->full = 0;
   q->head = 0;
   q->tail = 0;
-
-  q->amzn = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
-  pthread_mutex_init(q->amzn, NULL);
-
-  q->appl = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
-  pthread_mutex_init(q->appl, NULL);
-
-  q->binance = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
-  pthread_mutex_init(q->binance, NULL);
-
-  q->icm = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
-  pthread_mutex_init(q->icm, NULL);
 
   q->notFull = (pthread_cond_t *)malloc(sizeof(pthread_cond_t));
   pthread_cond_init(q->notFull, NULL);
@@ -490,22 +717,17 @@ void queueDelete(queue *q) {
   free(q->notFull);
   pthread_cond_destroy(q->notEmpty);
   free(q->notEmpty);
-  pthread_mutex_destroy(q->amzn);
-  pthread_mutex_destroy(q->appl);
-  pthread_mutex_destroy(q->binance);
-  pthread_mutex_destroy(q->icm);
-  free(q->amzn);
-  free(q->appl);
-  free(q->binance);
-  free(q->icm);
+  pthread_mutex_destroy(mux);
+  free(mux);
   free(q);
 }
 
-void queueAdd(queue *q, int in) {
-  // q->buf[q->tail].value = in;
-  //  TIC(q->tail) // start counting for q->tail producer
-
-  printf("producer: add %d to %ld\n", in, q->tail);
+void queueAdd(queue *q, findata *transaction) {
+  // todo, maybe memcpy
+  q->buf[q->tail].price = transaction->price;
+  q->buf[q->tail].symbol = transaction->symbol;
+  q->buf[q->tail].timestamp = transaction->timestamp;
+  q->buf[q->tail].volume = transaction->volume;
 
   q->tail++;
   if (q->tail == QUEUESIZE)
@@ -517,19 +739,16 @@ void queueAdd(queue *q, int in) {
   return;
 }
 
-void queueDel(queue *q, int *out) {
+void queueDel(queue *q) {
   if (q->empty) {
     printf("\033[1mThere is nothing to delete. Queue empty. Aborting\033[0m\n");
     return;
   }
 
-  // TOC(q->head) // stop counting for q->head producer
-
-  //*out = q->buf[q->head].value;
-  printf("consumer: received %d from %ld\n", *out, q->head);
+  findata transaction = q->buf[q->head];
+  saveTransaction(&transaction);
 
   q->head++;
-
   if (q->head == QUEUESIZE)
     q->head = 0;
   if (q->head == q->tail)
@@ -537,4 +756,56 @@ void queueDel(queue *q, int *out) {
   q->full = 0;
 
   return;
+}
+
+void saveTransaction(findata *transaction) {
+  FILE *fp;
+  candlestickMinute *c;
+  if (strcmp(transaction->symbol, "AMZN") == 0) {
+    fp = amzn_fp;
+    c = amzn_candlestick;
+  } else if (strcmp(transaction->symbol, "MSFT") == 0) {
+    fp = msft_fp;
+    c = msft_candlestick;
+  } else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0) {
+    fp = binance_fp;
+    c = binance_candlestick;
+  } else if (strcmp(transaction->symbol, "IC MARKETS:1") == 0) {
+    fp = icm_fp;
+    c = icm_candlestick;
+  } else {
+    printf("Error returning file descriptior: Not found\n");
+  }
+
+  fprintf(fp, "%s,%s,%s,%s,%llu\n", transaction->price, transaction->symbol,
+          transaction->timestamp, transaction->volume, get_timestamp());
+  updateCandlestick(c, transaction);
+}
+
+void updateCandlestick(candlestickMinute *c, findata *transaction) {
+  double price;
+  double vol;
+  uint64_t timestamp;
+  sscanf(transaction->price, "%lf", &price);
+  sscanf(transaction->volume, "%lf", &vol);
+  sscanf(transaction->timestamp, "%lu", &timestamp);
+
+  if (c->isDefault) {
+    c->open = price;
+    c->min = price;
+    c->max = price;
+  } else {
+    if (c->min > price) {
+      c->min = price;
+    }
+    if (c->max < price) {
+      c->max = price;
+    }
+  }
+
+  c->close = price;
+  c->numTransactions += 1;
+  c->totalPrice += price;
+  c->vol += vol;
+  c->isDefault = false;
 }
