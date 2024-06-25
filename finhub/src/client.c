@@ -21,7 +21,7 @@
 #define KBRN "\033[0;33m"
 #define RESET "\033[0m"
 
-#define QUEUESIZE 25
+#define QUEUESIZE 100
 #define NUM_PRO_THREADS 2
 #define NUM_CON_THREADS 2
 
@@ -134,6 +134,9 @@ void saveMovingAverage(movingAverage *ma, FILE *fp);
 void *schedule(void *args);
 void addDataPoint(movingAverage *ma, double price);
 bool areConsumersFinished();
+void transactionsHeader(FILE *fp);
+void candlesticksHeader(FILE *fp);
+void movingAverageHeader(FILE *fp);
 
 // Variable that is =1 if the client should keep running, and =0 to close the
 // client
@@ -359,23 +362,32 @@ int main(void) {
   // (Used for terminating the client)
   signal(SIGINT, intHandler);
 
-  // Open the output file
   amzn_fp = fopen("logs_amzn.csv", "w");
   msft_fp = fopen("logs_msft.csv", "w");
   binance_fp = fopen("logs_binance.csv", "w");
   icm_fp = fopen("logs_icm.csv", "w");
-  // fprintf(out_fp, "price,symbol,timestamp,volume,posttimestamp\n");
+  transactionsHeader(amzn_fp);
+  transactionsHeader(msft_fp);
+  transactionsHeader(binance_fp);
+  transactionsHeader(icm_fp);
 
   amzn_fp_candlestick = fopen("logs_amzn_candlestick.csv", "w");
   msft_fp_candlestick = fopen("logs_msft_candlestick.csv", "w");
   binance_fp_candlestick = fopen("logs_binance_candlestick.csv", "w");
   icm_fp_candlestick = fopen("logs_icm_candlestick.csv", "w");
-  // fprintf(out_fp, "open,close,max,min,volume\n");
+  candlesticksHeader(amzn_fp_candlestick);
+  candlesticksHeader(msft_fp_candlestick);
+  candlesticksHeader(binance_fp_candlestick);
+  candlesticksHeader(icm_fp_candlestick);
 
   amzn_fp_ma = fopen("logs_amzn_ma.csv", "w");
   msft_fp_ma = fopen("logs_msft_ma.csv", "w");
   binance_fp_ma = fopen("logs_binance_ma.csv", "w");
   icm_fp_ma = fopen("logs_icm_ma.csv", "w");
+  movingAverageHeader(amzn_fp_ma);
+  movingAverageHeader(msft_fp_ma);
+  movingAverageHeader(binance_fp_ma);
+  movingAverageHeader(icm_fp_ma);
 
   memset(&info, 0, sizeof info);
 
@@ -529,12 +541,14 @@ bool areConsumersFinished() {
 }
 
 void *producer(void *args) {
+  pthread_data *data = (pthread_data *)args;
   struct lws *wsi = NULL;
   // time_t start_time = time(NULL);
   // while (difftime(time(NULL), start_time) < 20.0) {
   while (keepRunning) {
-    //  If the websocket is not connected, connect
+    //   If the websocket is not connected, connect
     pthread_mutex_lock(mux);
+
     if (!connection_flag) {
       printf(KGRN "Connecting to %s://%s:%d%s \n\n" RESET,
              clientConnectionInfo.protocol, clientConnectionInfo.address,
@@ -565,6 +579,7 @@ void *producer(void *args) {
 }
 
 void *schedule(void *args) {
+
   while (1) {
     if (areConsumersFinished())
       break;
@@ -662,6 +677,20 @@ void *consumer(void *args) {
   isConsumerFinished[data->tid] = true;
 
   return (NULL);
+}
+
+void transactionsHeader(FILE *fp) {
+  fprintf(fp, "Price,Symbol,Timestamp,Volume,Posttimestamp\n");
+}
+
+void candlesticksHeader(FILE *fp) {
+  fprintf(
+      fp,
+      "Open,Close,Low,High,Volume,TotalPrice,NumTransactions,Mean,Timestamp\n");
+}
+
+void movingAverageHeader(FILE *fp) {
+  fprintf(fp, "Price,Total,Count,Timestamp\n");
 }
 
 candlestickMinute *candlestickInit() {
