@@ -61,6 +61,7 @@ typedef struct {
   uint8_t index;
 } movingAverage;
 
+// todo: use this struct
 typedef struct {
   candlestickMinute c;
   movingAverage ma;
@@ -74,7 +75,6 @@ movingAverage msft_ma;
 movingAverage binance_ma;
 movingAverage icm_ma;
 
-// The pointer to the output file
 static FILE *amzn_fp;
 static FILE *msft_fp;
 static FILE *binance_fp;
@@ -470,18 +470,8 @@ int main(void) {
     isConsumerFinished[i] = false;
   }
 
-  int result;
-  int policy;
-  // pthread_attr_t attr;
-  // pthread_attr_init(&attr);
-  //  Set the scheduling policy to FIFO (First In First Out)
-  // pthread_attr_getschedpolicy(&attr, &policy);
+  // todo: check returned code
   pthread_create(&scheduler, NULL, schedule, NULL);
-  // result = pthread_setschedprio(scheduler, sched_get_priority_max(policy));
-  // if (result != 0) {
-  // fprintf(stderr, "Error setting thread priority\n");
-  // return 1;
-  //}
 
   int rc;
   for (int i = 0; i < NUM_PRO_THREADS; i++) {
@@ -579,7 +569,6 @@ void *producer(void *args) {
 }
 
 void *schedule(void *args) {
-
   while (1) {
     if (areConsumersFinished())
       break;

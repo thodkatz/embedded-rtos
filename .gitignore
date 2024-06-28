@@ -7,3 +7,13 @@ producer_consumer/results.csv
 producer_consumer/results_bak.csv
 main
 
+# latex
+**.fls
+**.xdv
+**.toc
+**.synctex.gz
+**.out
+**.log
+**.fdb_latexmk
+**.aux
+
