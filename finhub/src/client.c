@@ -1,7 +1,3 @@
-// Simple client implemented using libwebsockets, to communicate with Finnhub
-// web sockets, and write the incoming trades in a text file. For RTES ECE AUTH,
-// 2022
-
 #include <libwebsockets.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -188,22 +184,6 @@ static void findataFromJson(findata *transaction, const char *label,
   } else
     printf("Label undefined\n");
 }
-
-// static FILE *get_file_descriptor_from_transaction(findata *transaction) {
-//   if (transaction == NULL)
-//     return NULL;
-
-//   if (strcmp(transaction->symbol, "AMZN") == 0)
-//     return amzn_fp;
-//   else if (strcmp(transaction->symbol, "msft") == 0)
-//     return msft_fp;
-//   else if (strcmp(transaction->symbol, "BINANCE:BTCUSDT") == 0)
-//     return binance_fp;
-//   else if (strcmp(transaction->symbol, "IC MARKETS:1") == 0)
-//     return icm_fp;
-//   else
-//     printf("Error returning file descriptior: Not found\n");
-// }
 
 // Callback function for the LEJP JSON Parser
 static signed char cb(struct lejp_ctx *ctx, char reason) {
