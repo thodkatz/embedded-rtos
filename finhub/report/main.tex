@@ -93,6 +93,8 @@
 
 Η παραπάνω διαπίστωση έγινε σε μεταγενέστερο στάδιο και τα αποτελέσματα μας ακολουθούν μια πιο απλή μεθοδολογία, όπου όλα τα νήματα έχουν την ίδια προτεραιότητα, και ο scheduler, όταν καλείται, μετά την απόκτηση του κλειδιού, καταγράφει την πληροφορία χωρίς κάποια συνθήκη. Το μειονέκτημα είναι ότι υπάρχει η πιθανότητα να μην συμπεριλάβουμε στους υπολογισμούς κάποιες συναλλαγές, που ανήκουν στο τρέχων λεπτό, και δεν έχουν επεξεργαστεί απο τους consumers όταν κλήθηκε ο scheduler. Ωστόσο η πληροφορία δεν χάνεται και προσμετράται για το επόμενο λεπτό, στην επόμενη κλήση του scheduler.
 
+Από την άλλη, θα μπορούσαμε να αναρωτηθούμε ότι για να μαθαίνουμε τις πιο πρόσφατες εξελίξεις, οι producers, θα μπορούσαν να είχαν υψηλότερη προτεραιότητα. Το οποίο φυσικά θα ερχόταν σε σύγκρουση με του πόσο γρήγορα θέλουμε να καταγράψουμε τη συναλλαγή και πόσο ακριβής είναι ο scheduler τελικά. Οπότε σε κάθε πολιτική προτεραιότητας διαπιστώνουμε ότι υπάρχει δούναι και λαβείν.
+
 Για την εξασφάλιση της αδιάκοπης λειτουργίας, οι producers είναι υπεύθυνοι για την επανασύνδεση με το websocket, και το πρόγραμμα τερματίζει με την αποστολή σήματος SIGINT.
 
 Αξίζει να σημειωθεί ότι χρησιμοποιήθηκαν 2 νήματα για producers, 2 για consumers, και 1 scheduler. Το μέγεθος της κοινής ουράς ήταν 100 στοιχείων. Η μελέτη για την επίδραση της ουράς, και τον αριθμό των νημάτων έχει γίνει στο prepatory homework, του οποίου την αναφορά μπορείτε να δείτε \href{https://github.com/thodkatz/embedded-rtos/blob/master/producer_consumer/report.pdf}{εδώ}.
@@ -105,14 +107,14 @@ $\frac{\text{Χρονική στιγμή καταγραφής scheduler} - (\tex
 
 \begin{figure}[h!]
 \centering
-\begin{subfigure}[b]{0.45\textwidth}
+\begin{subfigure}[b]{0.4\textwidth}
 \centering
 \includegraphics[width=\textwidth]{amzn_candlesticks.png}
 \caption{Candlesticks}
 \label{fig:sub1}
 \end{subfigure}
 \hfill
-\begin{subfigure}[b]{0.45\textwidth}
+\begin{subfigure}[b]{0.4\textwidth}
 \centering
 \includegraphics[width=\textwidth]{amzn_ma.png}
 \caption{Κινητός μέσος όρος τιμής 15 πιο πρόσφατων λεπτών}
@@ -121,14 +123,14 @@ $\frac{\text{Χρονική στιγμή καταγραφής scheduler} - (\tex
 
 \vskip\baselineskip
 
-\begin{subfigure}[b]{0.45\textwidth}
+\begin{subfigure}[b]{0.4\textwidth}
 \centering
 \includegraphics[width=\textwidth]{delay_transactions_line.png}
 \caption{Χρονική καθυστέρηση καταγραφής συναλλαγών (s)}
 \label{fig:sub3}
 \end{subfigure}
 \hfill
-\begin{subfigure}[b]{0.45\textwidth}
+\begin{subfigure}[b]{0.4\textwidth}
 \centering
 \includegraphics[width=\textwidth]{delay_transactions_hist.png}
 \caption{Ιστόγραμμα χρονικής καθυστέρησης καταγραφής συναλλαγών (s)}
@@ -136,14 +138,14 @@ $\frac{\text{Χρονική στιγμή καταγραφής scheduler} - (\tex
 
 \vskip\baselineskip
 
-\begin{subfigure}[b]{0.45\textwidth}
+\begin{subfigure}[b]{0.4\textwidth}
 \centering
 \includegraphics[width=\textwidth]{delay_candlestick_line.png}
 \caption{Ποσοστιαία απόκλιση του λεπτού του scheduler}
 \label{fig:sub3}
 \end{subfigure}
 \hfill
-\begin{subfigure}[b]{0.45\textwidth}
+\begin{subfigure}[b]{0.4\textwidth}
 \centering
 \includegraphics[width=\textwidth]{delay_candlestick_hist.png}
 \caption{Ιστόγραμμα ποσοστιαίας απόκλισης του λεπτού του scheduler}
@@ -307,6 +309,8 @@ $\frac{\text{Χρονική στιγμή καταγραφής scheduler} - (\tex
 \begin{itemize}
 \itemsep 0em
 \item Υπήρχαν κάποια χρονικά διαστήματα που δεν λαμβάναμε πληροφορία για συναλλαγές. Αυτό οφείλεται στην λειτουργία της πλατφόρμας finnhub, και όχι στην δική μας υλοποίηση. Εκεί παρατηρούμε κενά στα διαγράμματα candlesticks.
+%\item Η χρονική καθυστέρηση της καταγραφής των συναλλαγών απο τους consumers οφείλεται στο μεσοδιάστημα της προσθήκης δεδομένων στην κοινή ουρά απο τους producers και της επεξεργασίας τους απο τους consumers. Ο χρόνος δηλαδή που απαιτείται για την απελευθέρωση του κλειδιού, στον οποίο ευθύνεται και η συμμετοχήμ του scheduler, όταν καλείται ανα 1 λεπτό. 'Ετσι
+\item Η χρονική καθυστέρηση της καταγραφής των συναλλαγών οφείλεται στο χρόνο που απαιτείται για να αποκτήσουν το κλεδί οι consumers. Αυτό συμβαίνει εξαιτίας του χρόνου ολοκλήρωσης της δουλειάς των producers αλλά και του scheduler όταν καλείται ανα 1 λεπτό.
 \item Στις χρονικές στιγμές που χανόταν η σύνδεση, και ένας από τους producers προσπαθούσε για επανασύνδεση, παρατηρούμε μεγάλες χρονικές καθυστερήσεις στα διαγράμματα χρόνου. Αυτό οφείλεται επειδή οι consumers και ο scheduler, περιμένουν να τελειώσουν την δουλειά τους οι producers, υπεύθυνοι για την επανασύνδεση, που ενδεχομένως να απαιτεί αρκετές χρονοβόρες προσπάθειες.
 \item Από το αποτέλεσμα της εντολής \verb|time|, συμπεραίνουμε ότι το πρόβλημα είναι I/O bound και όχι CPU bound, μιας και η CPU την περισσότερη ώρα βρίσκεται σε αναμονή.
 \end{itemize}
